@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>r/place Clone — GitHub Pages</title>
+  <title>q/place</title>
   <style>
     :root{
       --bg:#0f1115;--panel:#151823;--muted:#8b93a7;--text:#e8ecf3;--accent:#6aa3ff;--ok:#5ee380;--warn:#ffcc66;--danger:#ff7a7a;
@@ -403,22 +403,13 @@
   </script>
 
 <script type="module">
-  // Import Firebase (modular CDN)
-  import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js';
-  import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js';
-  import {
-    getDatabase, ref, get, onChildAdded, onChildChanged, update, serverTimestamp
-  } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js';
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-app.js';
+import { getAuth, signInAnonymously } from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-auth.js';
+import {
+  getDatabase, ref, get, onChildAdded, onChildChanged, update, serverTimestamp
+} from 'https://www.gstatic.com/firebasejs/12.1.0/firebase-database.js';
 
-  // 1) Paste your config here (from Firebase console)
-  // Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+// --- 1) Firebase config ---
 const firebaseConfig = {
   apiKey: "AIzaSyCFwsKrYr_BiMUO3g35laAmBLgl3GzaFRA",
   authDomain: "qplace-7c542.firebaseapp.com",
@@ -430,66 +421,81 @@ const firebaseConfig = {
   measurementId: "G-NNXQH6VTTG"
 };
 
+// --- 2) Init Firebase ---
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getDatabase(app);
 
-  // 2) Init Firebase
-  const analytics = getAnalytics(app);
-  const app = initializeApp(firebaseConfig);
-  const auth = getAuth(app);
-  const db = getDatabase(app);
+// --- 3) Anonymous login ---
+await signInAnonymously(auth).catch(console.error);
 
-  // 3) Anonymous login (no UI)
-  await signInAnonymously(auth).catch(console.error);
+// --- 4) Board path ---
+const BOARD_PATH = `boards/${CANVAS_SIZE}`;
+const pxRef = ref(db, `${BOARD_PATH}/px`);
 
-  // --- Data model:
-  // boards/{size}/px/{x_y} => { c: uint32 RGBA, u: uid, ts: serverTimestamp() }
-  // boards/{size}/users/{uid}/last => serverTimestamp()
-
-  // Reuse CANVAS_SIZE from your existing file (make sure it's global)
-  const BOARD_PATH = `boards/${CANVAS_SIZE}`;
-
-  const pxRef = ref(db, `${BOARD_PATH}/px`);
-
-  // Initial load of existing pixels
-  get(pxRef).then(snap => {
-    const all = snap.val();
-    if (!all) return;
-    for (const k in all) {
-      const [x, y] = k.split('_').map(Number);
-      const v = all[k]?.c ?? 0;
-      // setU32/save are from your current canvas code
-      setU32(x, y, v >>> 0);
-    }
-    save();
-  });
-
-  // Live updates (others’ pixels)
-  onChildAdded(pxRef, s => {
-    const [x, y] = s.key.split('_').map(Number);
-    const v = s.val()?.c ?? 0;
+// --- 5) Load existing pixels ---
+get(pxRef).then(snap => {
+  const all = snap.val();
+  if (!all) return;
+  for (const k in all) {
+    const [x, y] = k.split('_').map(Number);
+    const v = all[k]?.c ?? 0;
     setU32(x, y, v >>> 0);
-    save();
-  });
-  onChildChanged(pxRef, s => {
-    const [x, y] = s.key.split('_').map(Number);
-    const v = s.val()?.c ?? 0;
-    setU32(x, y, v >>> 0);
-    save();
-  });
+  }
+  save();
+});
 
-  // Call this after you draw locally to also persist to Firebase
-  async function sendPixel(x, y, colorUint32) {
-    const uid = (auth.currentUser && auth.currentUser.uid) || 'anon';
-    const key = `${x}_${y}`;
-    const updates = {};
-    updates[`${BOARD_PATH}/px/${key}`] = { c: colorUint32 >>> 0, u: uid, ts: serverTimestamp() };
-    updates[`${BOARD_PATH}/users/${uid}/last`] = serverTimestamp(); // server time
-    await update(ref(db), updates); // atomic multi-path update
+// --- 6) Live updates ---
+onChildAdded(pxRef, s => {
+  const [x, y] = s.key.split('_').map(Number);
+  const v = s.val()?.c ?? 0;
+  setU32(x, y, v >>> 0);
+  save();
+});
+onChildChanged(pxRef, s => {
+  const [x, y] = s.key.split('_').map(Number);
+  const v = s.val()?.c ?? 0;
+  setU32(x, y, v >>> 0);
+  save();
+});
+
+// --- 7) Send pixel to Firebase ---
+async function sendPixel(x, y, colorUint32) {
+  const uid = (auth.currentUser && auth.currentUser.uid) || 'anon';
+  const key = `${x}_${y}`;
+  const updates = {};
+  updates[`${BOARD_PATH}/px/${key}`] = { c: colorUint32 >>> 0, u: uid, ts: serverTimestamp() };
+  updates[`${BOARD_PATH}/users/${uid}/last`] = serverTimestamp();
+  await update(ref(db), updates);
+}
+
+// --- 8) Modify handleClick to send pixel ---
+const originalHandleClick = handleClick;
+handleClick = async function(e){
+  const pos = screenToWorld(e);
+  if(!pos) return;
+
+  // --- Cooldown check ---
+  const now = Date.now();
+  const last = Number(localStorage.getItem('rplace_last_place'))||0;
+  const remain = last + PLACE_COOLDOWN_MS - now;
+  if(remain>0){ toast(`Cooldown: wait ${(Math.ceil(remain/100)/10).toFixed(1)}s`); return; }
+
+  // --- Eyedropper ---
+  if(eyedropper){
+    currentColor = u32At(pos.x,pos.y);
+    hud.textContent = `Picked ${u32ToCss(currentColor)} — click to place or press Esc/V to exit`;
+    return;
   }
 
-  // OPTIONAL: If your click handler is named handleClick, add the send:
-  // Inside your existing place-pixel code, AFTER drawing locally:
-  // await sendPixel(x, y, (r << 24) | (g << 16) | (b << 8) | 255);
-  // (Or if you already compute a uint32 color, pass that.)
+  // --- Draw locally ---
+  setU32(pos.x,pos.y,currentColor); 
+  save();
+  localStorage.setItem('rplace_last_place', String(now));
+
+  // --- Send to Firebase ---
+  try { await sendPixel(pos.x,pos.y,currentColor); } catch(err){ console.warn('Firebase error', err); }
+};
 </script>
 </body>
 </html>
